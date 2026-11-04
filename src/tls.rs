@@ -86,18 +86,25 @@ pub struct PairingBundle {
 
 impl PairingBundle {
     /// Load a cached [`PairingBundle`] JSON file from disk.
+    ///
+    /// # Arguments
+    /// * `path` - Filesystem path to the JSON pairing bundle file.
     pub fn load_from_file(path: impl AsRef<Path>) -> Result<Self> {
         let content = fs::read_to_string(path)?;
         serde_json::from_str(&content)
             .map_err(|e| DriverError::Crypto(format!("Invalid pairing JSON: {e}")))
     }
 
-    /// Save this [`PairingBundle`] to a JSON file on disk.
+    /// Save this [`PairingBundle`] to a JSON file on disk, creating parent directories if needed.
+    ///
+    /// # Arguments
+    /// * `&self` - Shared reference to the [`PairingBundle`] to serialize.
+    /// * `path` - Destination filesystem path for the JSON pairing cache.
     pub fn save_to_file(&self, path: impl AsRef<Path>) -> Result<()> {
-        if let Some(parent) = path.as_ref().parent() {
-            if !parent.as_os_str().is_empty() {
-                fs::create_dir_all(parent)?;
-            }
+        if let Some(parent) = path.as_ref().parent()
+            && !parent.as_os_str().is_empty()
+        {
+            fs::create_dir_all(parent)?;
         }
         let json = serde_json::to_string_pretty(self)
             .map_err(|e| DriverError::Crypto(format!("Serialize pairing JSON failed: {e}")))?;
@@ -114,6 +121,9 @@ impl PairingBundle {
     /// - **Block `id = 3`** (`184` B): Host TLS certificate (`tls_cert`).
     /// - **Block `id = 4`** (`161` B): AES-256-CBC encrypted + HMAC-SHA256 authenticated host P-256 private key.
     /// - **Block `id = 6`** (`400` B): Sensor static ECDH P-256 public key (`X_le` at `0x08..0x28`, `Y_le` at `0x4c..0x6c`).
+    ///
+    /// # Arguments
+    /// * `flash_data` - Raw bytes (`0x1000` B) read from Flash Partition 1 (`part_id = 1, sub_id = 1`).
     pub fn from_tls_flash_partition(flash_data: &[u8]) -> Result<Self> {
         let mut tls_cert: Option<Vec<u8>> = None;
         let mut priv_blob: Option<Vec<u8>> = None;
@@ -196,6 +206,10 @@ impl PairingBundle {
 }
 
 /// Derive `(psk_encryption_key, psk_validation_key)` from DMI `product_name` and `product_serial`.
+///
+/// # Arguments
+/// * `product_name` - Machine DMI product name string (e.g. `"20L7001YIX"` or `"VirtualBox"`).
+/// * `product_serial` - Machine DMI serial number string (read from `/sys/devices/virtual/dmi/id/product_serial`).
 pub fn derive_host_psk_keys(product_name: &str, product_serial: &str) -> ([u8; 32], [u8; 32]) {
     let mut hw_key = Vec::with_capacity(product_name.len() + product_serial.len() + 2);
     hw_key.extend_from_slice(product_name.as_bytes());
@@ -216,6 +230,9 @@ pub fn derive_host_psk_keys(product_name: &str, product_serial: &str) -> ([u8; 3
 
 /// Decrypt Block 4 (`priv_blob`) from Partition 1, trying the host DMI `product_name`/`product_serial`
 /// and falling back to `("VirtualBox", "0")` if the sensor was paired without DMI access.
+///
+/// # Arguments
+/// * `body` - Raw TLV Block 4 payload (`161` bytes) containing `0x02 || IV(16B) || Ciphertext(112B) || HMAC(32B)`.
 fn decrypt_host_priv_blob(body: &[u8]) -> Result<[u8; 32]> {
     if body.len() < 1 + 16 + 32 + 32 || body[0] != 0x02 {
         return Err(DriverError::Tls(
@@ -274,6 +291,12 @@ fn decrypt_host_priv_blob(body: &[u8]) -> Result<[u8; 32]> {
 
 /// TLS 1.2 PRF based on `P_SHA256` (`scsTLS.c` / `palCrypto.c` @ `0x180047830`):
 /// `PRF(secret, label, seed) = P_SHA256(secret, label || seed)`.
+///
+/// # Arguments
+/// * `secret` - PRF HMAC key bytes (e.g. `pre_master_secret` or `master_secret`).
+/// * `label` - ASCII PRF label bytes (e.g. `b"master secret"`, `b"key expansion"`, or `b"GWK"`).
+/// * `seed` - Seed bytes concatenated immediately after `label`.
+/// * `out_len` - Number of derived output bytes to generate.
 pub fn tls12_prf_sha256(secret: &[u8], label: &[u8], seed: &[u8], out_len: usize) -> Vec<u8> {
     let mut label_and_seed = Vec::with_capacity(label.len() + seed.len());
     label_and_seed.extend_from_slice(label);
@@ -300,6 +323,10 @@ pub fn tls12_prf_sha256(secret: &[u8], label: &[u8], seed: &[u8], out_len: usize
 }
 
 /// Compute standard 32-byte `HMAC-SHA256(key, data)`.
+///
+/// # Arguments
+/// * `key` - HMAC secret key slice.
+/// * `data` - Message payload slice to authenticate.
 pub fn hmac_sha256(key: &[u8], data: &[u8]) -> [u8; 32] {
     let mut mac = <HmacSha256 as Mac>::new_from_slice(key).expect("HMAC accepts any key size");
     mac.update(data);
@@ -329,6 +356,11 @@ impl TlsSessionKeys {
     /// `client_random` (32 B), and `server_random` (32 B), matching `scsTLS.c` (`0x18007a4c0`, `0x18007a650`).
     /// Note that Synaptics uses `seed = client_random || server_random` for **both** `"master secret"`
     /// and `"key expansion"`.
+    ///
+    /// # Arguments
+    /// * `pre_master_secret` - 32-byte ECDH shared secret X coordinate.
+    /// * `client_random` - 32-byte random nonce sent in `ClientHello`.
+    /// * `server_random` - 32-byte random nonce received in `ServerHello`.
     pub fn derive(
         pre_master_secret: &[u8],
         client_random: &[u8; 32],
@@ -364,6 +396,11 @@ impl TlsSessionKeys {
     }
 
     /// Compute the 12-byte TLS 1.2 `Finished` verify_data (`0x18007a9c0` / `0x18007bee0`).
+    ///
+    /// # Arguments
+    /// * `&self` - Shared reference to the derived [`TlsSessionKeys`].
+    /// * `is_client` - `true` for `"client finished"`, `false` for `"server finished"`.
+    /// * `handshake_transcript` - Concatenated handshake messages up to this point.
     pub fn compute_finished_verify_data(
         &self,
         is_client: bool,
@@ -392,6 +429,10 @@ pub struct TlsSession {
 }
 
 impl TlsSession {
+    /// Construct a new active [`TlsSession`] with sequence numbers initialized to `0`.
+    ///
+    /// # Arguments
+    /// * `keys` - Session encryption and MAC keys derived during the TLS 1.2 handshake.
     pub fn new(keys: TlsSessionKeys) -> Self {
         Self {
             keys,
@@ -404,6 +445,11 @@ impl TlsSession {
     /// Compute Synaptics custom TLS 1.2 record MAC (`scsTLS.c` @ `0x18007a350`):
     /// `HMAC-SHA256(mac_key, content_type(1B) || 0x0303(2B) || pt_len_be16(2B) || plaintext)`
     /// without including the 64-bit sequence number in the HMAC input.
+    ///
+    /// # Arguments
+    /// * `mac_key` - 32-byte HMAC-SHA256 write MAC key (client or server).
+    /// * `content_type` - TLS record content type (`0x16` Handshake or `0x17` ApplicationData).
+    /// * `plaintext` - Unencrypted record payload bytes.
     pub fn compute_synaptics_record_mac(
         mac_key: &[u8; 32],
         content_type: u8,
@@ -428,6 +474,11 @@ impl TlsSession {
 
     /// Encrypt a plaintext command into a TLS 1.2 record (`0x18007ac80` / `0x18007bd70`)
     /// using a fresh random 16-byte IV.
+    ///
+    /// # Arguments
+    /// * `&mut self` - Mutable reference to the active [`TlsSession`].
+    /// * `content_type` - TLS record content type (`0x16` or `0x17`).
+    /// * `plaintext` - Unencrypted command bytes to wrap.
     pub fn wrap_record(&mut self, content_type: u8, plaintext: &[u8]) -> Result<Vec<u8>> {
         let mut iv = [0u8; 16];
         rand::thread_rng().fill_bytes(&mut iv);
@@ -435,6 +486,12 @@ impl TlsSession {
     }
 
     /// Deterministic variant of [`Self::wrap_record`] accepting an explicit 16-byte IV.
+    ///
+    /// # Arguments
+    /// * `&mut self` - Mutable reference to the active [`TlsSession`].
+    /// * `content_type` - TLS record content type (`0x16` or `0x17`).
+    /// * `plaintext` - Unencrypted command bytes to wrap.
+    /// * `iv` - Explicit 16-byte AES-256-CBC initialization vector.
     pub fn wrap_record_with_iv(
         &mut self,
         content_type: u8,
@@ -477,6 +534,10 @@ impl TlsSession {
     }
 
     /// Decrypt and authenticate a TLS 1.2 record received from the sensor (`0x1800792a0` / `0x18007bc30`).
+    ///
+    /// # Arguments
+    /// * `&mut self` - Mutable reference to the active [`TlsSession`].
+    /// * `record` - Raw TLS 1.2 record bytes received on USB Bulk IN `0x81`.
     pub fn unwrap_record(&mut self, record: &[u8]) -> Result<(u8, Vec<u8>)> {
         if record.len() >= 7 && record[0] == TLS_CONTENT_ALERT {
             let msg = format!(
@@ -511,7 +572,7 @@ impl TlsSession {
         }
 
         let ciphertext_len = body_len - 16;
-        if ciphertext_len % 16 != 0 {
+        if !ciphertext_len.is_multiple_of(16) {
             return Err(DriverError::Tls(format!(
                 "TLS ciphertext length ({ciphertext_len}) is not a multiple of 16"
             )));
@@ -565,12 +626,20 @@ pub struct TlsHandshakeBuilder {
 }
 
 impl Default for TlsHandshakeBuilder {
+    /// Create a default [`TlsHandshakeBuilder`] with a fresh CSPRNG `client_random`.
+    ///
+    /// # Arguments
+    /// * None.
     fn default() -> Self {
         Self::new()
     }
 }
 
 impl TlsHandshakeBuilder {
+    /// Initialize a new [`TlsHandshakeBuilder`] with a fresh 32-byte random `client_random`.
+    ///
+    /// # Arguments
+    /// * None.
     pub fn new() -> Self {
         let mut client_random = [0u8; 32];
         rand::thread_rng().fill_bytes(&mut client_random);
@@ -585,6 +654,9 @@ impl TlsHandshakeBuilder {
 
     /// Build Flight 1 (`0x44 00 00 00` + TLS Record `0x16` containing `ClientHello`),
     /// matching `scsTLS.c` (`0x180079580` and `0x18007af90`).
+    ///
+    /// # Arguments
+    /// * `&mut self` - Mutable reference to the handshake builder (appends `ClientHello` to `self.transcript`).
     pub fn build_client_hello_flight(&mut self) -> Vec<u8> {
         let extensions: [u8; 12] = [
             0x00, 0x04, 0x00, 0x02, 0x00, 0x17, 0x00, 0x0b, 0x00, 0x02, 0x01, 0x00,
@@ -624,6 +696,10 @@ impl TlsHandshakeBuilder {
 
     /// Parse the sensor's Flight 1 response (`ServerHello`, `CertificateRequest`, `ServerHelloDone`)
     /// as implemented in `scsTLS.c` (`0x18007b5d0..0x18007ba90`).
+    ///
+    /// # Arguments
+    /// * `&mut self` - Mutable reference to the handshake builder.
+    /// * `raw_resp` - Raw response bytes read from USB Bulk IN `0x81` after sending Flight 1.
     pub fn process_server_flight(&mut self, raw_resp: &[u8]) -> Result<()> {
         let mut pos = if raw_resp.len() >= 7
             && raw_resp[0] == 0
@@ -694,6 +770,12 @@ impl TlsHandshakeBuilder {
 
     /// Build Client Flight 2 (`Certificate` + `ClientKeyExchange` + `CertificateVerify` +
     /// `ChangeCipherSpec` + encrypted `Finished`) prefixed with `0x44 00 00 00`.
+    ///
+    /// # Arguments
+    /// * `&mut self` - Mutable reference to the handshake builder.
+    /// * `host_cert` - Raw host TLS certificate blob (TLV Block 3 from Partition 1).
+    /// * `host_signing_key` - Host ECDSA P-256 signing key decrypted from TLV Block 4.
+    /// * `sensor_pub_sec1` - Sensor static ECDH P-256 public key in 65-byte uncompressed SEC1 format.
     pub fn build_client_second_flight(
         &mut self,
         host_cert: &[u8],
@@ -705,10 +787,8 @@ impl TlsHandshakeBuilder {
 
         let sensor_pub = p256::PublicKey::from_sec1_bytes(sensor_pub_sec1)
             .map_err(|e| DriverError::Crypto(format!("Invalid sensor P-256 public key: {e}")))?;
-        let shared = p256::ecdh::diffie_hellman(
-            eph_secret.to_nonzero_scalar(),
-            sensor_pub.as_affine(),
-        );
+        let shared =
+            p256::ecdh::diffie_hellman(eph_secret.to_nonzero_scalar(), sensor_pub.as_affine());
         let pre_master_secret = shared.raw_secret_bytes();
 
         let keys = TlsSessionKeys::derive(
@@ -795,6 +875,11 @@ impl TlsHandshakeBuilder {
 
     /// Process the sensor's Flight 2 response (`ChangeCipherSpec` + encrypted `Finished`)
     /// and verify the 12-byte `server finished` verify_data (`0x18007bee0`).
+    ///
+    /// # Arguments
+    /// * `&mut self` - Mutable reference to the handshake builder.
+    /// * `raw_resp` - Raw response bytes read from USB Bulk IN `0x81` after sending Flight 2.
+    /// * `session` - Mutable reference to the newly derived [`TlsSession`] used to decrypt `ServerFinished`.
     pub fn process_server_finished(
         &mut self,
         raw_resp: &[u8],
@@ -864,6 +949,10 @@ impl TlsHandshakeBuilder {
 mod tests {
     use super::*;
 
+    /// Verify that [`TlsSessionKeys::derive`] deterministically computes distinct client/server key material.
+    ///
+    /// # Arguments
+    /// *(none)*
     #[test]
     fn test_tls12_prf_sha256_deterministic() {
         let secret = [0x42u8; 32];
@@ -876,6 +965,10 @@ mod tests {
         assert_ne!(keys1.client_write_mac_key, keys1.server_write_mac_key);
     }
 
+    /// Verify that [`TlsSession::wrap_record_with_iv`] and [`TlsSession::unwrap_record`] round-trip cleanly.
+    ///
+    /// # Arguments
+    /// *(none)*
     #[test]
     fn test_synaptics_record_wrap_unwrap_roundtrip() {
         let raw_keys = TlsSessionKeys::derive(&[0x55; 32], &[0xaa; 32], &[0xbb; 32]);

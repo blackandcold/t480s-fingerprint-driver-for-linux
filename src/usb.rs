@@ -48,7 +48,10 @@ pub struct SensorInterruptEvent {
 }
 
 impl SensorInterruptEvent {
-    /// Parse a raw interrupt packet (up to 7 bytes) into a [`SensorInterruptEvent`].
+    /// Parse a raw interrupt packet (up to 7 bytes) read from Endpoint `0x83` into a [`SensorInterruptEvent`].
+    ///
+    /// # Arguments
+    /// * `raw` - Raw byte slice read from USB Interrupt IN endpoint `0x83`.
     pub fn from_bytes(raw: &[u8]) -> Option<Self> {
         if raw.is_empty() {
             return None;
@@ -69,12 +72,24 @@ impl SensorInterruptEvent {
 pub trait Transport {
     /// Execute a raw Bulk OUT `0x01` + Bulk IN `0x81` transaction.
     /// Automatically retries reading `0x81` once if status `0x00db` (`BusyRetry`) is returned.
+    ///
+    /// # Arguments
+    /// * `&mut self` - Mutable transport instance.
+    /// * `request` - Raw or TLS-wrapped command bytes to write to Bulk OUT `0x01`.
+    /// * `expected_resp_len` - Hint for the expected response byte length on Bulk IN `0x81`.
     fn transfer(&mut self, request: &[u8], expected_resp_len: usize) -> Result<Vec<u8>>;
 
     /// Wait for a 7-byte sensor interrupt event on Endpoint `0x83`.
+    ///
+    /// # Arguments
+    /// * `&mut self` - Mutable transport instance.
+    /// * `timeout` - Maximum duration to wait before returning a timeout error.
     fn wait_interrupt_event(&mut self, timeout: Duration) -> Result<SensorInterruptEvent>;
 
     /// Drain any stale/residual interrupt packets queued on Endpoint `0x83`.
+    ///
+    /// # Arguments
+    /// * `&mut self` - Mutable transport instance.
     fn flush_interrupt_events(&mut self) {}
 }
 
@@ -89,11 +104,18 @@ pub struct SynapticsUsbTransport {
 impl SynapticsUsbTransport {
     /// Open the Synaptics Metallica MIS Fingerprint Reader (`06cb:009a`), detach any kernel
     /// driver if active, and claim USB interface `0`.
+    ///
+    /// # Arguments
+    /// * None (uses default [`SYNAPTICS_VID`] `0x06cb` and [`METALLICA_MIS_PID`] `0x009a`).
     pub fn open() -> Result<Self> {
         Self::open_with_vid_pid(SYNAPTICS_VID, METALLICA_MIS_PID)
     }
 
     /// Open a Synaptics USB fingerprint sensor by explicit `(vid, pid)`.
+    ///
+    /// # Arguments
+    /// * `vid` - 16-bit USB Vendor ID (e.g. `0x06cb`).
+    /// * `pid` - 16-bit USB Product ID (e.g. `0x009a`).
     pub fn open_with_vid_pid(vid: u16, pid: u16) -> Result<Self> {
         let context = Context::new()?;
         let devices = context.devices()?;
@@ -138,16 +160,25 @@ impl SynapticsUsbTransport {
     }
 
     /// Return a clone of the atomic cancellation flag used to interrupt [`Self::wait_interrupt_event`].
+    ///
+    /// # Arguments
+    /// * `&self` - Shared reference to the USB transport.
     pub fn cancel_handle(&self) -> Arc<AtomicBool> {
         Arc::clone(&self.cancel_flag)
     }
 
     /// Clear any pending cancellation state before starting a new operation.
+    ///
+    /// # Arguments
+    /// * `&self` - Shared reference to the USB transport.
     pub fn clear_cancel(&self) {
         self.cancel_flag.store(false, Ordering::SeqCst);
     }
 
     /// Perform a USB port reset when the sensor requires re-enumeration.
+    ///
+    /// # Arguments
+    /// * `&mut self` - Mutable reference to the USB transport.
     pub fn reset_device(&mut self) -> Result<()> {
         drv_warn!("Performing USB port reset on sensor 06cb:009a");
         self.handle.reset()?;
@@ -156,6 +187,10 @@ impl SynapticsUsbTransport {
 }
 
 impl Drop for SynapticsUsbTransport {
+    /// Release USB interface `0` cleanly when the transport handle is dropped.
+    ///
+    /// # Arguments
+    /// * `&mut self` - Mutable reference to the transport being dropped.
     fn drop(&mut self) {
         if self.interface_claimed {
             let _ = self.handle.release_interface(0);
@@ -164,6 +199,13 @@ impl Drop for SynapticsUsbTransport {
 }
 
 impl Transport for SynapticsUsbTransport {
+    /// Write `request` to Bulk OUT `0x01` and read the sensor response from Bulk IN `0x81`,
+    /// automatically retrying once if the sensor responds with `0x00db` ([`SensorStatus::BusyRetry`]).
+    ///
+    /// # Arguments
+    /// * `&mut self` - Mutable reference to the USB transport.
+    /// * `request` - Outgoing wire command or TLS record bytes.
+    /// * `expected_resp_len` - Expected response length hint used to size the receive buffer.
     fn transfer(&mut self, request: &[u8], expected_resp_len: usize) -> Result<Vec<u8>> {
         let opcode = request.first().copied().unwrap_or(0);
         drv_debug!(
@@ -226,6 +268,12 @@ impl Transport for SynapticsUsbTransport {
         Ok(buf)
     }
 
+    /// Poll Interrupt IN `0x83` in `200 ms` slices until a 7-byte [`SensorInterruptEvent`] arrives,
+    /// `timeout` expires, or cooperative cancellation is signaled via `cancel_flag`.
+    ///
+    /// # Arguments
+    /// * `&mut self` - Mutable reference to the USB transport.
+    /// * `timeout` - Total maximum wait duration across all `200 ms` polling slices.
     fn wait_interrupt_event(&mut self, timeout: Duration) -> Result<SensorInterruptEvent> {
         // Poll in 200ms slices so cancellation via `cancel_flag` takes effect promptly.
         // IMPORTANT: Never pass a timeout < 1ms to `read_interrupt`, because `rusb` truncates
@@ -273,11 +321,18 @@ impl Transport for SynapticsUsbTransport {
         }
     }
 
+    /// Drain up to 8 pending interrupt packets from Endpoint `0x83` using a `25 ms` non-blocking timeout.
+    ///
+    /// # Arguments
+    /// * `&mut self` - Mutable reference to the USB transport.
     fn flush_interrupt_events(&mut self) {
         let mut buf = [0u8; 64];
         let flush_timeout = Duration::from_millis(25);
         for _ in 0..8 {
-            match self.handle.read_interrupt(EP_INTR_EVENT, &mut buf, flush_timeout) {
+            match self
+                .handle
+                .read_interrupt(EP_INTR_EVENT, &mut buf, flush_timeout)
+            {
                 Ok(n) => {
                     drv_debug!(
                         "Flushed residual interrupt on EP 0x{EP_INTR_EVENT:02x}: len={n} B, data={}",

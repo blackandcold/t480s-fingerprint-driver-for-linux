@@ -31,8 +31,10 @@ Unlike legacy Python wrappers (`python3-validity` / `open-fprintd`), this driver
 fprintd (D-Bus Daemon)
   └── libfprint-2.so.2 / libfprint-2-tod.so.1
         └── libfprint-2-tod1-synaptics009a.so (This Rust driver)
-              ├── src/tod.rs       → GObject FpDeviceClass subclass (TOD-1 vtable)
-              ├── src/moc.rs       → 2D Capacitive Capture (0x02), QMatcher (0x5e..0x62) & DB2 (0x45..0x4b) pipeline
+              ├── src/tod.rs       → GObject FpDeviceClass subclass (type-safe TOD-1 vtable)
+              ├── src/moc.rs       → QMatcher on-chip verification (0x5e..0x62) & 12-stage enrollment (0x68..0x6b)
+              ├── src/capture.rs   → 2D Capacitive Capture (0x02), OTP calibration (0x6f), LED (0x39) & EP 0x83
+              ├── src/db2.rs       → On-flash DB2 biometric database (0x45..0x4b), SID identity & RSA write-enable
               ├── src/protocol.rs  → Sensor session, Metallica init (0x01/0x19/0x43/0x06) & Wire Opcodes
               ├── src/tls.rs       → TLS 1.2 ECDH_ECDSA P-256 + AES-256-CBC + HMAC-SHA256 Handshake & Record Layer
               ├── src/usb.rs       → libusb transport (EP 0x01 Bulk OUT, 0x81/0x82 Bulk IN, 0x83 Interrupt IN)
@@ -166,8 +168,10 @@ Supported `SYNAPTICS_009A_LOG` levels: `error`, `warn`, `info` (default), `debug
 | [`calib_06cb_009a.bin`](calib_06cb_009a.bin) | 2D capacitive calibration blob (`13,440` bytes) for sensor `0x0199` |
 | [`src/lib.rs`](src/lib.rs) | Library entrypoint and public exports |
 | [`src/tod.rs`](src/tod.rs) | `libfprint-2-tod1` GObject plugin (`FpDeviceClass` vtable, pre-warming, suspend/resume) |
-| [`src/moc.rs`](src/moc.rs) | 2D frame acquisition (`0x02`), QMatcher engine (`0x5e..0x62`), enrollment (`0x68..0x6b`), and DB2 (`0x45..0x4b`) |
-| [`src/protocol.rs`](src/protocol.rs) | Sensor session, Metallica init sequence, and `WireOpcode` definitions |
+| [`src/moc.rs`](src/moc.rs) | On-chip QMatcher verification (`0x5e..0x62`) and 12-stage enrollment (`0x68..0x6b`) |
+| [`src/capture.rs`](src/capture.rs) | 2D timeslot compiler (`0x02`), OTP calibration (`0x6f`), LED (`0x39`), and `EP 0x83` capture |
+| [`src/db2.rs`](src/db2.rs) | On-flash DB2 biometric storage (`0x45..0x4b`), SID encoding, and RSA write-enable (`0x06`) |
+| [`src/protocol.rs`](src/protocol.rs) | Sensor session, Metallica init sequence, `ByteReader`, and `WireOpcode` definitions |
 | [`src/tls.rs`](src/tls.rs) | Custom Synaptics TLS 1.2 stack (`ECDH_ECDSA_AES256_CBC_SHA256`) and Partition 1 (`0x40`) parser |
 | [`src/usb.rs`](src/usb.rs) | `rusb` (`libusb`) USB transport with cooperative cancellation on Interrupt `0x83` |
 | [`src/error.rs`](src/error.rs) | Hardware status codes (`SensorStatus`) and scan error mapping |

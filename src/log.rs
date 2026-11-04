@@ -33,7 +33,10 @@ pub enum LogLevel {
 }
 
 impl LogLevel {
-    /// Fixed-width 5-character label printed inside the `[synaptics-009a <TAG>]` prefix.
+    /// Return the fixed-width 5-character label printed inside the `[synaptics-009a <TAG>]` prefix.
+    ///
+    /// # Arguments
+    /// * `self` - The [`LogLevel`] severity variant to format.
     pub const fn tag(self) -> &'static str {
         match self {
             Self::Off => "OFF  ",
@@ -45,8 +48,11 @@ impl LogLevel {
     }
 }
 
-/// Determine the configured maximum [`LogLevel`] from environment variables once per process.
-/// Defaults to [`LogLevel::Info`].
+/// Determine the configured maximum [`LogLevel`] from environment variables once per process,
+/// defaulting to [`LogLevel::Info`].
+///
+/// # Arguments
+/// * None (reads `SYNAPTICS_009A_LOG`, `SYNAPTICS_009A_DEBUG`, and `G_MESSAGES_DEBUG` from the process environment).
 pub fn max_log_level() -> LogLevel {
     static MAX_LEVEL: OnceLock<LogLevel> = OnceLock::new();
     *MAX_LEVEL.get_or_init(|| {
@@ -78,6 +84,10 @@ pub fn max_log_level() -> LogLevel {
 
 /// Format and emit a single log line to `stderr`, flushing immediately for real-time output
 /// in `journalctl -u fprintd -f`.
+///
+/// # Arguments
+/// * `level` - Severity level of the diagnostic message.
+/// * `args` - Pre-formatted message arguments produced by `format_args!`.
 pub fn emit_log(level: LogLevel, args: fmt::Arguments<'_>) {
     if level > max_log_level() || level == LogLevel::Off {
         return;

@@ -36,6 +36,10 @@ pub enum SensorStatus {
 }
 
 impl From<u16> for SensorStatus {
+    /// Convert a raw 16-bit little-endian status word read from Bulk IN `0x81` into a [`SensorStatus`].
+    ///
+    /// # Arguments
+    /// * `code` - Raw 16-bit status word from the first 2 bytes of the sensor response.
     fn from(code: u16) -> Self {
         match code {
             0x0000 => Self::Ok,
@@ -53,7 +57,10 @@ impl From<u16> for SensorStatus {
 }
 
 impl SensorStatus {
-    /// Return the numeric 16-bit status word.
+    /// Return the numeric 16-bit status word corresponding to this [`SensorStatus`].
+    ///
+    /// # Arguments
+    /// * `self` - The [`SensorStatus`] value to convert.
     pub const fn code(self) -> u16 {
         match self {
             Self::Ok => 0x0000,
@@ -69,12 +76,20 @@ impl SensorStatus {
     }
 
     /// Return `true` if the status code is `0x0000` ([`SensorStatus::Ok`]).
+    ///
+    /// # Arguments
+    /// * `self` - The [`SensorStatus`] value to test.
     pub const fn is_ok(self) -> bool {
         matches!(self, Self::Ok)
     }
 }
 
 impl std::fmt::Display for SensorStatus {
+    /// Format the [`SensorStatus`] as `"0xXXXX (<VariantName>)"` for diagnostic logging.
+    ///
+    /// # Arguments
+    /// * `self` - The [`SensorStatus`] value to format.
+    /// * `f` - Target formatter stream.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::Ok => write!(f, "0x0000 (OK)"),
@@ -91,8 +106,11 @@ impl std::fmt::Display for SensorStatus {
     }
 }
 
-/// Human-readable description of the 32-bit scan quality code returned at offset `+12`
+/// Return a human-readable description of the 32-bit scan quality code returned at offset `+12`
 /// of the `ProgramStatus` (`0x51 00 20 00 00`) response after a 2D frame capture.
+///
+/// # Arguments
+/// * `code` - 32-bit scan quality status code (`0` = valid 2D frame, non-zero = rejected scan).
 pub const fn describe_scan_quality_error(code: u32) -> &'static str {
     match code {
         0x0000 => "ok",
@@ -166,14 +184,20 @@ pub enum DriverError {
 }
 
 impl DriverError {
-    /// Returns `true` if this error represents a recoverable finger-touch / image-quality issue
+    /// Return `true` if this error represents a recoverable finger-touch / image-quality issue
     /// where the user should simply lift their finger and touch the sensor again.
+    ///
+    /// # Arguments
+    /// * `&self` - The [`DriverError`] instance to classify.
     pub const fn is_scan_retryable(&self) -> bool {
         matches!(self, Self::ScanQuality { .. } | Self::ScanRetry(_))
     }
 
-    /// Returns `true` if this error indicates that the underlying USB handle or TLS 1.2 session
+    /// Return `true` if this error indicates that the underlying USB handle or TLS 1.2 session
     /// is out of sync or disconnected and must be re-established on the next operation.
+    ///
+    /// # Arguments
+    /// * `&self` - The [`DriverError`] instance to classify.
     pub const fn is_session_fatal(&self) -> bool {
         matches!(
             self,
@@ -186,6 +210,9 @@ impl DriverError {
     /// - `1` = `FP_DEVICE_RETRY_TOO_SHORT`
     /// - `2` = `FP_DEVICE_RETRY_CENTER_FINGER`
     /// - `3` = `FP_DEVICE_RETRY_REMOVE_FINGER`
+    ///
+    /// # Arguments
+    /// * `&self` - The [`DriverError`] instance to map into a `libfprint-2` retry code.
     pub const fn fp_device_retry_code(&self) -> c_int {
         match self {
             Self::ScanQuality { code, .. } => match *code {
@@ -207,6 +234,9 @@ impl DriverError {
     /// - `7` = `FP_DEVICE_ERROR_DATA_NOT_FOUND`
     /// - `8` = `FP_DEVICE_ERROR_DATA_FULL`
     /// - `10` = `FP_DEVICE_ERROR_REMOVED`
+    ///
+    /// # Arguments
+    /// * `&self` - The [`DriverError`] instance to map into a `libfprint-2` device error code.
     pub const fn fp_device_error_code(&self) -> c_int {
         match self {
             Self::DeviceNotFound | Self::Usb(rusb::Error::NoDevice) => 10, // FP_DEVICE_ERROR_REMOVED

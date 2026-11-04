@@ -1,10 +1,173 @@
-//! Wire protocol opcodes, pre-TLS Metallica initialization sequence, and encrypted
-//! [`SensorSession`] command dispatcher (`scsCommand.c` @ `0x180116960`).
+//! Wire protocol opcodes, compile-time binary helpers, pre-TLS Metallica initialization sequence,
+//! and encrypted [`SensorSession`] command dispatcher (`scsCommand.c` @ `0x180116960`).
 
 use crate::error::{DriverError, Result, SensorStatus};
 use crate::tls::{TLS_CONTENT_APPLICATION_DATA, TlsHandshakeBuilder, TlsSession};
 use crate::usb::Transport;
 use crate::{drv_debug, drv_error, drv_info, drv_warn};
+
+/// Decode a fixed-length hexadecimal string into a `[u8; N]` byte array at **compile time**.
+///
+/// Any length mismatch or non-hexadecimal character triggers a compile-time error instead of
+/// a runtime heap allocation or panic.
+///
+/// # Arguments
+/// * `hex` - ASCII hexadecimal string of exact length `N * 2` characters.
+pub const fn decode_hex_const<const N: usize>(hex: &str) -> [u8; N] {
+    /// Convert a single ASCII hex character byte (`0..=9`, `a..=f`, `A..=F`) into its 4-bit value.
+    ///
+    /// # Arguments
+    /// * `b` - Single ASCII byte from the hex string.
+    const fn nibble(b: u8) -> u8 {
+        match b {
+            b'0'..=b'9' => b - b'0',
+            b'a'..=b'f' => b - b'a' + 10,
+            b'A'..=b'F' => b - b'A' + 10,
+            _ => panic!("Invalid hexadecimal character in const hex string"),
+        }
+    }
+
+    let bytes = hex.as_bytes();
+    assert!(
+        bytes.len() == N * 2,
+        "Hex string length does not match target [u8; N] array length"
+    );
+
+    let mut out = [0u8; N];
+    let mut i = 0usize;
+    while i < N {
+        let hi = nibble(bytes[2 * i]);
+        let lo = nibble(bytes[2 * i + 1]);
+        out[i] = (hi << 4) | lo;
+        i += 1;
+    }
+    out
+}
+
+/// Zero-copy little-endian binary reader with structured [`DriverError::ShortResponse`] bounds checking.
+#[derive(Debug, Clone, Copy)]
+pub struct ByteReader<'a> {
+    buf: &'a [u8],
+    pos: usize,
+    context: &'static str,
+}
+
+impl<'a> ByteReader<'a> {
+    /// Create a new [`ByteReader`] over `buf`, tagging any truncation error with `context`.
+    ///
+    /// # Arguments
+    /// * `buf` - Underlying byte slice to parse.
+    /// * `context` - Static human-readable label included in [`DriverError::ShortResponse`] if truncated.
+    pub const fn new(buf: &'a [u8], context: &'static str) -> Self {
+        Self {
+            buf,
+            pos: 0,
+            context,
+        }
+    }
+
+    /// Return the current byte offset within the underlying slice.
+    ///
+    /// # Arguments
+    /// * `&self` - Shared reference to the [`ByteReader`].
+    pub const fn position(&self) -> usize {
+        self.pos
+    }
+
+    /// Return the number of unread bytes remaining.
+    ///
+    /// # Arguments
+    /// * `&self` - Shared reference to the [`ByteReader`].
+    pub const fn remaining_len(&self) -> usize {
+        self.buf.len().saturating_sub(self.pos)
+    }
+
+    /// Return the unread tail slice starting at [`Self::position`].
+    ///
+    /// # Arguments
+    /// * `&self` - Shared reference to the [`ByteReader`].
+    pub fn remaining_slice(&self) -> &'a [u8] {
+        &self.buf[self.pos..]
+    }
+
+    /// Verify that at least `need` more bytes are available from the current cursor position.
+    ///
+    /// # Arguments
+    /// * `&self` - Shared reference to the [`ByteReader`].
+    /// * `need` - Minimum number of unread bytes required.
+    pub fn ensure(&self, need: usize) -> Result<()> {
+        let expected = self.pos + need;
+        if self.buf.len() < expected {
+            return Err(DriverError::ShortResponse {
+                context: self.context,
+                expected,
+                actual: self.buf.len(),
+            });
+        }
+        Ok(())
+    }
+
+    /// Read a single `u8` and advance the cursor by 1 byte.
+    ///
+    /// # Arguments
+    /// * `&mut self` - Mutable reference to the [`ByteReader`].
+    pub fn read_u8(&mut self) -> Result<u8> {
+        self.ensure(1)?;
+        let val = self.buf[self.pos];
+        self.pos += 1;
+        Ok(val)
+    }
+
+    /// Read a little-endian `u16` and advance the cursor by 2 bytes.
+    ///
+    /// # Arguments
+    /// * `&mut self` - Mutable reference to the [`ByteReader`].
+    pub fn read_u16_le(&mut self) -> Result<u16> {
+        self.ensure(2)?;
+        let val = u16::from_le_bytes([self.buf[self.pos], self.buf[self.pos + 1]]);
+        self.pos += 2;
+        Ok(val)
+    }
+
+    /// Read a little-endian `u32` and advance the cursor by 4 bytes.
+    ///
+    /// # Arguments
+    /// * `&mut self` - Mutable reference to the [`ByteReader`].
+    pub fn read_u32_le(&mut self) -> Result<u32> {
+        self.ensure(4)?;
+        let val = u32::from_le_bytes([
+            self.buf[self.pos],
+            self.buf[self.pos + 1],
+            self.buf[self.pos + 2],
+            self.buf[self.pos + 3],
+        ]);
+        self.pos += 4;
+        Ok(val)
+    }
+
+    /// Read a subslice of `len` bytes and advance the cursor by `len`.
+    ///
+    /// # Arguments
+    /// * `&mut self` - Mutable reference to the [`ByteReader`].
+    /// * `len` - Number of bytes to slice from the current position.
+    pub fn read_slice(&mut self, len: usize) -> Result<&'a [u8]> {
+        self.ensure(len)?;
+        let out = &self.buf[self.pos..self.pos + len];
+        self.pos += len;
+        Ok(out)
+    }
+
+    /// Read a fixed-size byte array `[u8; N]` and advance the cursor by `N`.
+    ///
+    /// # Arguments
+    /// * `&mut self` - Mutable reference to the [`ByteReader`].
+    pub fn read_array<const N: usize>(&mut self) -> Result<[u8; N]> {
+        let slice = self.read_slice(N)?;
+        let mut arr = [0u8; N];
+        arr.copy_from_slice(slice);
+        Ok(arr)
+    }
+}
 
 /// Wire opcodes used by the Synaptics Metallica MIS (`06cb:009a`) driver (`scsCommand.c` @ `0x180116960`).
 #[repr(u8)]
@@ -61,7 +224,10 @@ pub enum WireOpcode {
 }
 
 impl WireOpcode {
-    /// Human-readable name for any wire opcode byte, used in structured error and log messages.
+    /// Return a human-readable name for any wire opcode byte, used in structured error and log messages.
+    ///
+    /// # Arguments
+    /// * `opcode` - Raw 1-byte wire command opcode (`request[0]`).
     pub const fn name(opcode: u8) -> &'static str {
         match opcode {
             0x01 => "GetVersion",
@@ -113,35 +279,34 @@ pub struct SensorVersion {
 }
 
 impl SensorVersion {
-    /// Parse from the 36-byte payload following the 2-byte status word in the 38-byte response.
+    /// Parse a [`SensorVersion`] from the 36-byte payload following the 2-byte status word in the 38-byte response.
+    ///
+    /// # Arguments
+    /// * `payload` - Response payload bytes of `GetVersion` (`0x01`) after stripping the 2-byte status word.
     pub fn from_response_payload(payload: &[u8]) -> Result<Self> {
-        if payload.len() < 27 {
-            return Err(DriverError::ShortResponse {
-                context: "GetVersion (0x01)",
-                expected: 27,
-                actual: payload.len(),
-            });
-        }
-        let mut serial_number = [0u8; 6];
-        serial_number.copy_from_slice(&payload[16..22]);
+        let mut r = ByteReader::new(payload, "GetVersion (0x01)");
+        r.ensure(27)?;
         Ok(Self {
-            build_time: u32::from_le_bytes([payload[0], payload[1], payload[2], payload[3]]),
-            build_num: u32::from_le_bytes([payload[4], payload[5], payload[6], payload[7]]),
-            version_major: payload[8],
-            version_minor: payload[9],
-            target: payload[10],
-            product: payload[11],
-            silicon_rev: payload[12],
-            formal_release: payload[13],
-            platform: payload[14],
-            patch: payload[15],
-            serial_number,
-            security_flags: u16::from_le_bytes([payload[22], payload[23]]),
-            iface_type: payload[24],
+            build_time: r.read_u32_le()?,
+            build_num: r.read_u32_le()?,
+            version_major: r.read_u8()?,
+            version_minor: r.read_u8()?,
+            target: r.read_u8()?,
+            product: r.read_u8()?,
+            silicon_rev: r.read_u8()?,
+            formal_release: r.read_u8()?,
+            platform: r.read_u8()?,
+            patch: r.read_u8()?,
+            serial_number: r.read_array::<6>()?,
+            security_flags: r.read_u16_le()?,
+            iface_type: r.read_u8()?,
         })
     }
 
     /// Format firmware version as `"<major>.<minor>.<build> (patch <patch>)"`.
+    ///
+    /// # Arguments
+    /// * `&self` - Shared reference to the [`SensorVersion`].
     pub fn formatted_version(&self) -> String {
         format!(
             "{}.{:02}.{:04} (patch {})",
@@ -150,6 +315,9 @@ impl SensorVersion {
     }
 
     /// Return the 6-byte hardware serial number as a 12-character hex string.
+    ///
+    /// # Arguments
+    /// * `&self` - Shared reference to the [`SensorVersion`].
     pub fn serial_hex(&self) -> String {
         hex::encode(self.serial_number)
     }
@@ -166,23 +334,27 @@ pub struct SensorSession<T: Transport> {
     pub factory_calib: Option<Vec<u8>>,
 }
 
-impl<T: Transport> SensorSession<T> {
-    /// 632-byte initialization security blob (`0x06 0x02 ...`) for `06cb:009a` (Metallica MIS),
-    /// required before starting the TLS 1.2 handshake so the sensor loads its TLS root state.
-    pub const INIT_HARDCODED_009A_HEX: &str = concat!(
-        "06020000014a231406e5542fc6dc3b1aedebe68f55596ad3ca13f6e019994c6f71672fff756fbde0511d09d45978b12ba415b3694a0e763",
-        "48c8cfe9dbb9abf86813fc0c67c1005519a6f87360c2fb3e12bd0a9e012b06d9f5c9b44ccc6645b0fbd47afe45c8c874fcb88fbfd18fb7a",
-        "9b3241351f256acce689f9586a52b01f8fdcb66cdf3b340b1f9f386d58ca24fdfcdfbcebefb5f3a3c2a08357721040235a20ce1ee2f4f78",
-        "56e0d9c27b92cd9b975c86f2c8cab1179868f795da674004b93c15e6ac8aa825a1907f2003cb9e6df096423167b2cabae98c0cd3fd200d1",
-        "1c7e0ee1ba5a725f7f2022886f3caa5f68b688ba61bc5cb0190db569efa0a57aa9d76ecdc7440c8920ea02768734221260d083bebb39c17",
-        "6d129c01d1a0f1388497171402ba041afd925d71e76ce4905e44fa5fd528759a2c9f12895864b5aa394dc71a4a17161dd82197a10742fa5",
-        "f3135c5e78820e36653fa3db535f57c71897242939d7da50f81070ce9ab81c61af6ac29a6c6c4a5df73ffd08542fb540e417939ed117298",
-        "051d27736c2faf1c5577a2133b6f60ea7484c692faae2a49c51c8e6f69af77774bad51a9adeea3109d3611d6a437cdc0c356e46a8f9a6d3",
-        "054c5519c17c986e54f61f8329006ce184c275984799dbdf5512188fa8ff10aa2ddc25eb697ebdcb156509309ade5d7909a734bf35ec69e",
-        "062cb941c2ea4af0958110da93bd2b5f17fc9b1ebdbd8020a3c36f22a68f707226cec716126d6a830219521669bd59fa0e4bd35db6ef0aa",
-        "2999d1c0e7acf67e598696cd58cc4bdb1b7c037ee9a085f784c4"
-    );
+/// 581-byte initialization security blob (`0x06 0x02 ...`) for `06cb:009a` (Metallica MIS),
+/// decoded at compile time.
+const INIT_HARDCODED_009A: [u8; 581] = decode_hex_const(concat!(
+    "06020000014a231406e5542fc6dc3b1aedebe68f55596ad3ca13f6e019994c6f71672fff756fbde0511d09d45978b12ba415b3694a0e763",
+    "48c8cfe9dbb9abf86813fc0c67c1005519a6f87360c2fb3e12bd0a9e012b06d9f5c9b44ccc6645b0fbd47afe45c8c874fcb88fbfd18fb7a",
+    "9b3241351f256acce689f9586a52b01f8fdcb66cdf3b340b1f9f386d58ca24fdfcdfbcebefb5f3a3c2a08357721040235a20ce1ee2f4f78",
+    "56e0d9c27b92cd9b975c86f2c8cab1179868f795da674004b93c15e6ac8aa825a1907f2003cb9e6df096423167b2cabae98c0cd3fd200d1",
+    "1c7e0ee1ba5a725f7f2022886f3caa5f68b688ba61bc5cb0190db569efa0a57aa9d76ecdc7440c8920ea02768734221260d083bebb39c17",
+    "6d129c01d1a0f1388497171402ba041afd925d71e76ce4905e44fa5fd528759a2c9f12895864b5aa394dc71a4a17161dd82197a10742fa5",
+    "f3135c5e78820e36653fa3db535f57c71897242939d7da50f81070ce9ab81c61af6ac29a6c6c4a5df73ffd08542fb540e417939ed117298",
+    "051d27736c2faf1c5577a2133b6f60ea7484c692faae2a49c51c8e6f69af77774bad51a9adeea3109d3611d6a437cdc0c356e46a8f9a6d3",
+    "054c5519c17c986e54f61f8329006ce184c275984799dbdf5512188fa8ff10aa2ddc25eb697ebdcb156509309ade5d7909a734bf35ec69e",
+    "062cb941c2ea4af0958110da93bd2b5f17fc9b1ebdbd8020a3c36f22a68f707226cec716126d6a830219521669bd59fa0e4bd35db6ef0aa",
+    "2999d1c0e7acf67e598696cd58cc4bdb1b7c037ee9a085f784c4"
+));
 
+impl<T: Transport> SensorSession<T> {
+    /// Create a new unencrypted [`SensorSession`] wrapping `transport`.
+    ///
+    /// # Arguments
+    /// * `transport` - Underlying USB or mock transport implementation.
     pub fn new(transport: T) -> Self {
         Self {
             transport,
@@ -193,22 +365,17 @@ impl<T: Transport> SensorSession<T> {
 
     /// Execute a command and verify the 2-byte status word at the start of the response,
     /// returning the remaining payload bytes.
+    ///
+    /// # Arguments
+    /// * `&mut self` - Mutable reference to the [`SensorSession`].
+    /// * `request` - Unencrypted command payload starting with a [`WireOpcode`] byte.
+    /// * `expected_resp_len` - Expected response length hint in bytes.
     pub fn execute_cmd(&mut self, request: &[u8], expected_resp_len: usize) -> Result<Vec<u8>> {
         let opcode = request.first().copied().unwrap_or(0);
         let opcode_name = WireOpcode::name(opcode);
         let raw_resp = self.execute_raw(request, expected_resp_len)?;
-        if raw_resp.len() < 2 {
-            drv_error!(
-                "Short response for 0x{opcode:02x} ({opcode_name}): got {} B, expected >= 2 B",
-                raw_resp.len()
-            );
-            return Err(DriverError::ShortResponse {
-                context: opcode_name,
-                expected: 2,
-                actual: raw_resp.len(),
-            });
-        }
-        let status = SensorStatus::from(u16::from_le_bytes([raw_resp[0], raw_resp[1]]));
+        let mut r = ByteReader::new(&raw_resp, opcode_name);
+        let status = SensorStatus::from(r.read_u16_le()?);
         if !status.is_ok() {
             drv_warn!(
                 "Sensor command 0x{opcode:02x} ({opcode_name}) returned non-OK status {status}"
@@ -219,29 +386,33 @@ impl<T: Transport> SensorSession<T> {
                 status,
             });
         }
-        Ok(raw_resp[2..].to_vec())
+        Ok(r.remaining_slice().to_vec())
     }
 
     /// Execute a raw command (automatically wrapping/unwrapping TLS 1.2 `0x17` records if active,
     /// except for `0x44` handshake tunnel packets).
+    ///
+    /// # Arguments
+    /// * `&mut self` - Mutable reference to the [`SensorSession`].
+    /// * `request` - Raw command bytes to send (wrapped in TLS `0x17` if TLS is active).
+    /// * `expected_resp_len` - Expected response length hint in bytes.
     pub fn execute_raw(&mut self, request: &[u8], expected_resp_len: usize) -> Result<Vec<u8>> {
         let is_handshake_tunnel =
             request.first().copied() == Some(WireOpcode::TlsHandshakeData as u8);
 
-        if !is_handshake_tunnel {
-            if let Some(tls) = self.tls.as_mut().filter(|s| s.active) {
-                let wrapped = tls.wrap_record(TLS_CONTENT_APPLICATION_DATA, request)?;
-                let rx_wrapped = self.transport.transfer(&wrapped, expected_resp_len + 0x45)?;
-                let (ct, unwrapped) = tls.unwrap_record(&rx_wrapped)?;
-                if ct != TLS_CONTENT_APPLICATION_DATA {
-                    let msg = format!(
-                        "Expected TLS ApplicationData (0x17), got content_type=0x{ct:02x}"
-                    );
-                    drv_error!("{msg}");
-                    return Err(DriverError::Tls(msg));
-                }
-                return Ok(unwrapped);
+        if !is_handshake_tunnel && let Some(tls) = self.tls.as_mut().filter(|s| s.active) {
+            let wrapped = tls.wrap_record(TLS_CONTENT_APPLICATION_DATA, request)?;
+            let rx_wrapped = self
+                .transport
+                .transfer(&wrapped, expected_resp_len + 0x45)?;
+            let (ct, unwrapped) = tls.unwrap_record(&rx_wrapped)?;
+            if ct != TLS_CONTENT_APPLICATION_DATA {
+                let msg =
+                    format!("Expected TLS ApplicationData (0x17), got content_type=0x{ct:02x}");
+                drv_error!("{msg}");
+                return Err(DriverError::Tls(msg));
             }
+            return Ok(unwrapped);
         }
 
         self.transport.transfer(request, expected_resp_len)
@@ -251,24 +422,40 @@ impl<T: Transport> SensorSession<T> {
     ///
     /// Note: `0x04` (`NoopStatus` / `AcqStop`) cannot be used as an idle keepalive ping because
     /// it returns `0x0412` (`SecurityOrDbError`) when no 2D acquisition is running.
+    ///
+    /// # Arguments
+    /// * `&mut self` - Mutable reference to the [`SensorSession`].
     pub fn ping_status(&mut self) -> Result<()> {
         let _ = self.get_version()?;
         Ok(())
     }
 
     /// Query sensor firmware and hardware version (`WireOpcode::GetVersion` = `0x01`, 38B resp).
+    ///
+    /// # Arguments
+    /// * `&mut self` - Mutable reference to the [`SensorSession`].
     pub fn get_version(&mut self) -> Result<SensorVersion> {
         let payload = self.execute_cmd(&[WireOpcode::GetVersion as u8], 38)?;
         SensorVersion::from_response_payload(&payload)
     }
 
     /// Query 68-byte sensor hardware configuration (`WireOpcode::GetConfig` = `0x19`).
+    ///
+    /// # Arguments
+    /// * `&mut self` - Mutable reference to the [`SensorSession`].
     pub fn get_config(&mut self) -> Result<Vec<u8>> {
         self.execute_cmd(&[WireOpcode::GetConfig as u8], 68)
     }
 
     /// Read a chunk from a flash partition (`WireOpcode::StoragePartRead` = `0x40`,
     /// 13B req `[0x40, part_id, sub_id, 0, 0, offset_le32, size_le32]` -> `2B status + 4B len + 2B pad + data`).
+    ///
+    /// # Arguments
+    /// * `&mut self` - Mutable reference to the [`SensorSession`].
+    /// * `part_id` - Flash partition identifier (e.g. `0x01` for the TLS pairing partition).
+    /// * `sub_id` - Flash sub-partition identifier (e.g. `0x01`).
+    /// * `offset` - Byte offset within the partition to start reading from.
+    /// * `len` - Number of bytes to read from the partition.
     pub fn read_partition_chunk(
         &mut self,
         part_id: u8,
@@ -285,25 +472,26 @@ impl<T: Transport> SensorSession<T> {
         req[9..13].copy_from_slice(&len.to_le_bytes());
 
         let payload = self.execute_cmd(&req, (len as usize) + 16)?;
-        if payload.len() < 6 {
-            return Err(DriverError::ShortResponse {
-                context: "StoragePartRead (0x40)",
-                expected: 6,
-                actual: payload.len(),
-            });
-        }
-        let actual_len = (u32::from_le_bytes(payload[0..4].try_into().unwrap()) as usize)
-            .min(payload.len().saturating_sub(6));
-        Ok(payload[6..6 + actual_len].to_vec())
+        let mut r = ByteReader::new(&payload, "StoragePartRead (0x40)");
+        let reported_len = r.read_u32_le()? as usize;
+        let _padding = r.read_u16_le()?;
+        let actual_len = reported_len.min(r.remaining_len());
+        Ok(r.read_slice(actual_len)?.to_vec())
     }
 
     /// Read Flash Partition 1 (`0x1000` bytes) and extract the host-sensor [`crate::tls::PairingBundle`].
+    ///
+    /// # Arguments
+    /// * `&mut self` - Mutable reference to the [`SensorSession`].
     pub fn read_tls_flash_bundle(&mut self) -> Result<crate::tls::PairingBundle> {
         let flash_data = self.read_partition_chunk(0x01, 0x01, 0, 0x1000)?;
         crate::tls::PairingBundle::from_tls_flash_partition(&flash_data)
     }
 
     /// Reboot the sensor (`WireOpcode::Reset` = `0x05`, `[0x05, 0x02, 0x00]`) to release active TLS state.
+    ///
+    /// # Arguments
+    /// * `&mut self` - Mutable reference to the [`SensorSession`].
     pub fn reboot_sensor(&mut self) -> Result<()> {
         drv_debug!("Rebooting sensor (0x05 0x02 0x00) to release TLS session");
         let _ = self.execute_cmd(&[WireOpcode::Reset as u8, 0x02, 0x00], 2)?;
@@ -316,6 +504,9 @@ impl<T: Transport> SensorSession<T> {
     /// 2. Send `0x19` (`GetConfig`)
     /// 3. Send `0x43 0x02` (`GetFwextInfo` on Partition 2)
     /// 4. Send `0x06 0x02 ...` (`INIT_HARDCODED_009A`)
+    ///
+    /// # Arguments
+    /// * `&mut self` - Mutable reference to the [`SensorSession`].
     pub fn initialize_metallica(&mut self) -> Result<SensorVersion> {
         drv_debug!("Init step 1/4: Querying SensorVersion (0x01)");
         let version = self.get_version()?;
@@ -334,13 +525,16 @@ impl<T: Transport> SensorSession<T> {
         let _ = self.execute_cmd(&[WireOpcode::GetFwextInfo as u8, 0x02], 0xf0);
 
         drv_debug!("Init step 4/4: Sending Metallica security init blob (0x06 0x02)");
-        let init_blob = hex::decode(Self::INIT_HARDCODED_009A_HEX).expect("valid hex constant");
-        let _ = self.execute_cmd(&init_blob, 64)?;
+        let _ = self.execute_cmd(&INIT_HARDCODED_009A, 64)?;
 
         Ok(version)
     }
 
     /// Establish an encrypted TLS 1.2 session with the sensor using a [`crate::tls::PairingBundle`].
+    ///
+    /// # Arguments
+    /// * `&mut self` - Mutable reference to the [`SensorSession`].
+    /// * `bundle` - Host-sensor TLS 1.2 pairing credentials (private key, certificate, and sensor public key).
     pub fn establish_tls_session(&mut self, bundle: &crate::tls::PairingBundle) -> Result<()> {
         let host_priv_bytes = hex::decode(&bundle.host_private_key_hex)
             .map_err(|e| DriverError::Crypto(format!("Invalid host_private_key_hex: {e}")))?;
