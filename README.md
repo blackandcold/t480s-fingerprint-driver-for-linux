@@ -2,7 +2,7 @@
 
 Native **Rust** Linux driver (**Touch OEM Driver** `libfprint-2-tod1`) with full **Match-on-Chip (MoC)** support for the **Synaptics Metallica MIS Touch Fingerprint Reader (`06cb:009a`)** integrated into **Lenovo ThinkPad T480s**, **T480**, **X280**, and **P52s** laptops.
 
-Unlike legacy Python wrappers (`python3-validity` / `open-fprintd`), this driver compiles into a single native C-ABI shared library (`libfprint-2-tod1-synaptics009a.so`) loaded directly by the official Ubuntu/Debian **`fprintd`** daemon via `libfprint-2-tod.so.1`.
+Unlike legacy Python wrappers (`python3-validity` / `open-fprintd`), this driver compiles into a native C-ABI shared library (`libfprint-2-tod1-synaptics009a.so`) loaded by `fprintd` through libfprint's **TOD (Touch OEM Driver)** interface.
 
 ---
 
@@ -20,7 +20,7 @@ Unlike legacy Python wrappers (`python3-validity` / `open-fprintd`), this driver
   - Every USB command and response travels encrypted inside TLS 1.2 `0x17` Application Data records (`AES-256-CBC` + `HMAC-SHA256`).
 - **Instant Sensor Activation (~5 ms) & Lifecycle Management**:
   - **Background pre-warming** (`dev_probe` / `dev_init`): the TLS 1.2 handshake and factory OTP calibration (`0x6f`) are initialized when `fprintd` starts. When `sudo` or the login screen prompts for a fingerprint, the sensor LED turns on in **~5 ms**.
-  - **`--no-timeout` mode included in the `.deb` package**: keeps the TLS session alive, preventing USB device resets after 30 seconds of inactivity (eliminating repeated **USBGuard** notifications).
+  - An optional `--no-timeout` mode is available for fprintd service configurations that support it; keeping the TLS session warm avoids periodic sensor resets.
   - **Suspend / Resume support (`suspend` / `resume`)**: cleanly closes the active session before system sleep and automatically reconnects upon wakeup.
 
 ---
@@ -44,59 +44,9 @@ fprintd (D-Bus Daemon)
 
 ---
 
-## Prerequisites: Removing `python3-validity` / `open-fprintd`
+## Installation on Arch Linux / CachyOS
 
-If you previously installed the `python3-validity` / `open-fprintd` PPA, disable it and restore the official `fprintd` and `libfprint-2-tod1` packages:
-
-```bash
-sudo systemctl disable --now python3-validity.service open-fprintd.service fprintd-resume.service || true
-sudo systemctl mask python3-validity.service
-sudo apt update
-sudo apt install -y fprintd libfprint-2-2 libfprint-2-tod1 libpam-fprintd
-```
-
-> **Note on Sensor Firmware**: the `06cb:009a` sensor must have Partition 2 flashed with the Synaptics QMatcher firmware (`6_07f_lenovo_mis_qm.xpfwext`, v6.07.0164) and factory host pairing data in Partition 1 (already present if the sensor was initialized at least once under Windows or via `validity-sensors-firmware`).
-
----
-
-## Installation from `.deb` Package (Recommended)
-
-Download `libfprint-2-tod1-synaptics009a_0.1.0-1_amd64.deb` from the [**Releases**](https://github.com/corradoproietti/t480s-fingerprint-driver-for-linux/releases) page and install it with `dpkg`:
-
-```bash
-sudo dpkg -i libfprint-2-tod1-synaptics009a_0.1.0-1_amd64.deb
-```
-
-The `.deb` package automatically:
-1. Installs `/usr/lib/x86_64-linux-gnu/libfprint-2/tod-1/libfprint-2-tod1-synaptics009a.so` (native `libfprint-2-tod1` plugin).
-2. Installs `/lib/systemd/system/fprintd.service.d/synaptics009a-no-timeout.conf` (`fprintd -t` / `--no-timeout` override to keep the TLS session warm in RAM and avoid periodic USB resets).
-3. Reloads `systemd` and restarts `fprintd.service`.
-
----
-
-## Building from Source
-
-### 1. Build Dependencies
-
-On Ubuntu / Debian / Linux Mint:
-
-```bash
-sudo apt update
-sudo apt install -y build-essential cargo rustc pkg-config libusb-1.0-0-dev libfprint-2-tod1
-```
-
-### 2. Compile and Install
-
-On Ubuntu / Debian / Linux Mint:
-
-```bash
-cargo build --release
-sudo install -D -m 0644 target/release/libt480s_fingerprint_v2.so \
-    /usr/lib/x86_64-linux-gnu/libfprint-2/tod-1/libfprint-2-tod1-synaptics009a.so
-sudo systemctl restart fprintd
-```
-
-### Arch Linux / CachyOS
+The `06cb:009a` sensor must have the Synaptics QMatcher firmware (`6_07f_lenovo_mis_qm.xpfwext`, v6.07.0164) in Partition 2 and factory pairing data in Partition 1. Pairing data is usually present if the sensor was initialized under Windows or with `validity-sensors-firmware`.
 
 This driver requires **TOD (Touch OEM Driver)** support: an extension to libfprint
 that loads separately installed driver plugins. Arch's standard `libfprint`
@@ -104,18 +54,17 @@ package does not provide this loader. Install the AUR package
 [`libfprint-tod`](https://aur.archlinux.org/packages/libfprint-tod), which replaces
 `libfprint` and provides both `libfprint-2.so.2` and `libfprint-2-tod.so.1`.
 
-Install the build tools and runtime dependencies:
+Install the build tools, USB/GLib dependencies, and `fprintd`, then build the
+TOD package from the AUR. The AUR package replaces standard `libfprint`:
 
 ```bash
 sudo pacman -S --needed base-devel rust pkgconf libusb glib2 fprintd
-# If you use paru, install the TOD variant from the AUR:
 paru -S libfprint-tod
 ```
 
 The `rust` package includes Cargo. If you already manage Rust through `rustup`,
 omit `rust` from the pacman command and use your existing toolchain (with Rust
-2024 edition support). You can also build `libfprint-tod` using the normal AUR
-`makepkg` workflow instead of `paru`.
+2024 edition support). Substitute your preferred AUR helper for `paru` if needed.
 
 Confirm that the TOD library is present before building:
 
@@ -123,39 +72,11 @@ Confirm that the TOD library is present before building:
 ls -l /usr/lib/libfprint-2.so.2 /usr/lib/libfprint-2-tod.so.1
 ```
 
-`build.rs` links by library filename using the linker's standard search paths;
-no `/usr/lib/x86_64-linux-gnu` directory or compatibility symlink is needed on
-Arch. Build from the repository directory and install into Arch's TOD plugin
-directory:
-
-```bash
-cargo build --release
-sudo install -D -m 0644 target/release/libt480s_fingerprint_v2.so \
-    /usr/lib/libfprint-2/tod-1/libfprint-2-tod1-synaptics009a.so
-sudo systemctl restart fprintd
-fprintd-enroll -f right-index-finger
-fprintd-verify
-```
-
-The sensor firmware and pairing prerequisites above still apply. The driver
-manually defines the TOD C ABI layout in `src/tod.rs`; building successfully does
-not by itself verify runtime compatibility with a particular `libfprint-tod`
-version. If enrollment fails, inspect `journalctl -u fprintd -b`.
-
-The `.deb` installation and `pam-auth-update` instructions are for Debian-based
-systems. For Arch/CachyOS PAM configuration, follow the
-[ArchWiki fprint instructions](https://wiki.archlinux.org/title/Fprint).
-
-#### Build an Arch package (recommended on Arch/CachyOS)
-
-The repository includes an AUR-ready recipe in `packaging/arch`. Install
-`libfprint-tod` from the AUR first, as described above; `makepkg` cannot resolve
-AUR dependencies itself. Then build and install using pacman:
+Build and install the driver package from this repository's Arch recipe:
 
 ```bash
 cd packaging/arch
 makepkg -si
-sudo pacman -S --needed fprintd
 sudo systemctl restart fprintd
 fprintd-enroll -f right-index-finger
 fprintd-verify
@@ -278,15 +199,19 @@ fprintd-delete "$USER"
 
 You can also manage fingerprints graphically via **GNOME Settings → Users → Fingerprint Login** or **Fingwit**.
 
-### Enabling Fingerprint Authentication for `sudo`, Login, and Lock Screen
+### Enabling Fingerprint Authentication for `sudo` on Arch
 
-Run:
+Add this line to the `auth` section of `/etc/pam.d/sudo`, before its existing
+password rule:
 
-```bash
-sudo pam-auth-update
+```pam
+auth       sufficient   pam_fprintd.so
 ```
 
-Make sure **`[*] Fingerprint authentication`** is checked (using the spacebar) and press **Enter**.
+Keep the existing password fallback. Test in a second terminal with `sudo -k`
+followed by `sudo -v`; keep an open root shell until you confirm it works. For
+GDM, the lock screen, or other PAM services, see the
+[ArchWiki fprint instructions](https://wiki.archlinux.org/title/Fprint).
 
 ---
 

@@ -1,318 +1,175 @@
 diff --git a/README.md b/README.md
-index 45be977..b31c34e 100644
+index b31c34e..280b43c 100644
 --- a/README.md
 +++ b/README.md
-@@ -87,6 +87,8 @@ sudo apt install -y build-essential cargo rustc pkg-config libusb-1.0-0-dev libf
+@@ -2,7 +2,7 @@
  
- ### 2. Compile and Install
+ Native **Rust** Linux driver (**Touch OEM Driver** `libfprint-2-tod1`) with full **Match-on-Chip (MoC)** support for the **Synaptics Metallica MIS Touch Fingerprint Reader (`06cb:009a`)** integrated into **Lenovo ThinkPad T480s**, **T480**, **X280**, and **P52s** laptops.
  
-+On Ubuntu / Debian / Linux Mint:
-+
- ```bash
- cargo build --release
- sudo install -D -m 0644 target/release/libt480s_fingerprint_v2.so \
-@@ -94,6 +96,166 @@ sudo install -D -m 0644 target/release/libt480s_fingerprint_v2.so \
- sudo systemctl restart fprintd
- ```
+-Unlike legacy Python wrappers (`python3-validity` / `open-fprintd`), this driver compiles into a single native C-ABI shared library (`libfprint-2-tod1-synaptics009a.so`) loaded directly by the official Ubuntu/Debian **`fprintd`** daemon via `libfprint-2-tod.so.1`.
++Unlike legacy Python wrappers (`python3-validity` / `open-fprintd`), this driver compiles into a native C-ABI shared library (`libfprint-2-tod1-synaptics009a.so`) loaded by `fprintd` through libfprint's **TOD (Touch OEM Driver)** interface.
  
-+### Arch Linux / CachyOS
-+
-+This driver requires **TOD (Touch OEM Driver)** support: an extension to libfprint
-+that loads separately installed driver plugins. Arch's standard `libfprint`
-+package does not provide this loader. Install the AUR package
-+[`libfprint-tod`](https://aur.archlinux.org/packages/libfprint-tod), which replaces
-+`libfprint` and provides both `libfprint-2.so.2` and `libfprint-2-tod.so.1`.
-+
-+Install the build tools and runtime dependencies:
-+
-+```bash
-+sudo pacman -S --needed base-devel rust pkgconf libusb glib2 fprintd
-+# If you use paru, install the TOD variant from the AUR:
-+paru -S libfprint-tod
-+```
-+
-+The `rust` package includes Cargo. If you already manage Rust through `rustup`,
-+omit `rust` from the pacman command and use your existing toolchain (with Rust
-+2024 edition support). You can also build `libfprint-tod` using the normal AUR
-+`makepkg` workflow instead of `paru`.
-+
-+Confirm that the TOD library is present before building:
-+
-+```bash
-+ls -l /usr/lib/libfprint-2.so.2 /usr/lib/libfprint-2-tod.so.1
-+```
-+
-+`build.rs` links by library filename using the linker's standard search paths;
-+no `/usr/lib/x86_64-linux-gnu` directory or compatibility symlink is needed on
-+Arch. Build from the repository directory and install into Arch's TOD plugin
-+directory:
-+
-+```bash
-+cargo build --release
-+sudo install -D -m 0644 target/release/libt480s_fingerprint_v2.so \
-+    /usr/lib/libfprint-2/tod-1/libfprint-2-tod1-synaptics009a.so
-+sudo systemctl restart fprintd
-+fprintd-enroll -f right-index-finger
-+fprintd-verify
-+```
-+
-+The sensor firmware and pairing prerequisites above still apply. The driver
-+manually defines the TOD C ABI layout in `src/tod.rs`; building successfully does
-+not by itself verify runtime compatibility with a particular `libfprint-tod`
-+version. If enrollment fails, inspect `journalctl -u fprintd -b`.
-+
-+The `.deb` installation and `pam-auth-update` instructions are for Debian-based
-+systems. For Arch/CachyOS PAM configuration, follow the
-+[ArchWiki fprint instructions](https://wiki.archlinux.org/title/Fprint).
-+
-+#### Build an Arch package (recommended on Arch/CachyOS)
-+
-+The repository includes an AUR-ready recipe in `packaging/arch`. Install
-+`libfprint-tod` from the AUR first, as described above; `makepkg` cannot resolve
-+AUR dependencies itself. Then build and install using pacman:
-+
-+```bash
-+cd packaging/arch
-+makepkg -si
-+sudo pacman -S --needed fprintd
-+sudo systemctl restart fprintd
-+fprintd-enroll -f right-index-finger
-+fprintd-verify
-+```
-+
-+The package installs the plugin into `/usr/lib/libfprint-2/tod-1`, so pacman can
-+track and remove it. It does not modify PAM settings or automatically restart
-+`fprintd`. `fprintd` is an optional package dependency used for enrollment and
-+authentication. The firmware requirements above also apply to this package.
-+
-+If the LED flashes briefly before you touch the sensor or enrollment repeatedly
-+requests a retry, follow [Sensor Calibration](#sensor-calibration) below.
-+
-+The recipe downloads a pinned upstream commit, applies
-+`arch-library-paths.patch` and `host-calibration.patch`, and uses the supplied `Cargo.lock` for reproducible
-+dependency versions. It builds and runs the unit tests without network access
-+after fetching dependencies in `prepare()`. It does not build arbitrary edits
-+in your working tree. If you change `build.rs`, refresh the packaging patch and
-+its checksum as well.
-+
-+To submit to the AUR, add your maintainer details to `PKGBUILD` and copy
-+`PKGBUILD`, `.SRCINFO`, `arch-library-paths.patch`, `host-calibration.patch`, and `Cargo.lock` into the AUR
-+package repository. After changing package metadata or source checksums,
-+regenerate `.SRCINFO` with `makepkg --printsrcinfo > .SRCINFO` from
-+`packaging/arch`. These files are provided here; the package has not been
-+submitted to the AUR.
-+
-+---
-+
-+## Sensor Calibration
-+
-+Generate calibration for your own sensor if the LED flashes once and turns off
-+before you can place your finger, or enrollment keeps returning
-+`enroll-remove-and-retry` / `enroll-retry-scan` without making progress.
-+
-+**Validated on a ThinkPad T480s with Synaptics `06cb:009a` running CachyOS:**
-+sensor-specific host calibration resolved this behavior. Enrollment returned
-+`enroll-completed`, and a subsequent `fprintd-verify` returned `verify-match`.
-+This confirms operation on that system; other sensors still need verification.
-+
-+If the log reports a touch before you have touched the reader, followed by a
-+capture timeout, the sensor may be using unsuitable host calibration. A timeout
-+alone does not establish that the finger was removed too early. The driver logs
-+whether it uses a local calibration file or the bundled fallback.
-+
-+Arch package release `0.1.0-2` and later includes the `synaptics009a-calibrate`
-+utility. It captures three iterations with the sensor **clean, dry, and entirely
-+uncovered**, using the host correction algorithm from
-+[python-validity](https://github.com/uunicorn/python-validity/blob/master/validitysensor/sensor.py).
-+It does not erase fingerprints, re-pair the sensor, update firmware, or write
-+sensor flash. It also does not regenerate the separate on-chip clean-slate
-+image. The host calibration file is specific to the physical sensor; do not
-+copy a calibration file from another laptop.
-+
-+Cancel any running enrollment and install the package containing the utility.
-+Keep the sensor **clean, dry, and completely untouched** during the entire
-+calibration, including the three-second startup delay:
-+
-+```bash
-+sudo systemctl stop fprintd
-+sudo synaptics009a-calibrate --output /var/lib/fprint/.synaptics_06cb_009a_calib.bin
-+```
-+
-+For a source build, run `cargo build --release` and use
-+`sudo ./target/release/synaptics009a-calibrate --output /var/lib/fprint/.synaptics_06cb_009a_calib.bin`
-+from the repository root instead of the installed command.
-+
-+Continue only after the utility reports **`Saved 13440 bytes`**:
-+
-+```bash
-+sudo systemctl start fprintd
-+fprintd-enroll -f right-index-finger
-+fprintd-verify
-+```
-+
-+For enrollment and verification, place your finger normally on the touch
-+sensor. Expected final results are `enroll-completed` and
-+`verify-match (done)`, respectively.
-+
-+The utility refuses to overwrite an existing file. If one exists, preserve it
-+under another name before generating a replacement. It creates the calibration
-+file only after all three captures succeed; errors must be resolved before
-+trying enrollment again. Do not run another fingerprint client while calibrating.
-+The file persists across reboots and is loaded automatically by the driver;
-+you do not need to recalibrate on every boot or for each finger.
-+
-+To undo a newly generated calibration without deleting it:
-+
-+```bash
-+sudo systemctl stop fprintd
-+sudo mv -n /var/lib/fprint/.synaptics_06cb_009a_calib.bin \
-+    /var/lib/fprint/.synaptics_06cb_009a_calib.bin.disabled
-+sudo systemctl start fprintd
-+```
-+
-+Check `journalctl -u fprintd -b` for
-+`Using host calibration from /var/lib/fprint/.synaptics_06cb_009a_calib.bin`
-+to confirm the new file is being used. Offline tests cover frame averaging,
-+correction arithmetic, malformed input, and capture-timeout reporting.
-+
  ---
  
- ## Usage & PAM Configuration
-diff --git a/src/capture.rs b/src/capture.rs
-index 36cae45..8ae942f 100644
---- a/src/capture.rs
-+++ b/src/capture.rs
-@@ -653,7 +653,7 @@ impl<T: Transport> SensorSession<T> {
-                         .wait_interrupt_event(Duration::from_secs(5))
-                         .map_err(|e| match e {
-                             DriverError::Usb(rusb::Error::Timeout) => DriverError::ScanRetry(
--                                "Finger lifted too quickly before frame capture completed"
-+                                "No completed image within 5 seconds after the sensor's touch event; check calibration if this happens without touching the sensor"
-                                     .to_string(),
-                             ),
-                             other => other,
-diff --git a/src/error.rs b/src/error.rs
-index ab436c2..4073b67 100644
---- a/src/error.rs
-+++ b/src/error.rs
-@@ -220,7 +220,9 @@ impl DriverError {
-                 0x0010..=0x00ff => 2, // FP_DEVICE_RETRY_CENTER_FINGER
-                 _ => 3,               // FP_DEVICE_RETRY_REMOVE_FINGER
-             },
--            Self::ScanRetry(_) => 3, // FP_DEVICE_RETRY_REMOVE_FINGER
-+            // An incomplete frame or unexpected interrupt does not establish
-+            // that a finger is still present or was removed too early.
-+            Self::ScanRetry(_) => 0, // FP_DEVICE_RETRY_GENERAL
-             _ => 0,                  // FP_DEVICE_RETRY_GENERAL
-         }
-     }
-diff --git a/src/lib.rs b/src/lib.rs
-index 17902bc..21ffd97 100644
---- a/src/lib.rs
-+++ b/src/lib.rs
-@@ -20,6 +20,7 @@
- //!               └── log.rs       : Real-time stderr / systemd-journald structured logger
- //! ```
+@@ -20,7 +20,7 @@ Unlike legacy Python wrappers (`python3-validity` / `open-fprintd`), this driver
+   - Every USB command and response travels encrypted inside TLS 1.2 `0x17` Application Data records (`AES-256-CBC` + `HMAC-SHA256`).
+ - **Instant Sensor Activation (~5 ms) & Lifecycle Management**:
+   - **Background pre-warming** (`dev_probe` / `dev_init`): the TLS 1.2 handshake and factory OTP calibration (`0x6f`) are initialized when `fprintd` starts. When `sudo` or the login screen prompts for a fingerprint, the sensor LED turns on in **~5 ms**.
+-  - **`--no-timeout` mode included in the `.deb` package**: keeps the TLS session alive, preventing USB device resets after 30 seconds of inactivity (eliminating repeated **USBGuard** notifications).
++  - An optional `--no-timeout` mode is available for fprintd service configurations that support it; keeping the TLS session warm avoids periodic sensor resets.
+   - **Suspend / Resume support (`suspend` / `resume`)**: cleanly closes the active session before system sleep and automatically reconnects upon wakeup.
  
-+pub mod calibration;
- pub mod capture;
- pub mod db2;
- pub mod error;
-diff --git a/src/moc.rs b/src/moc.rs
-index 04ee412..25d2783 100644
---- a/src/moc.rs
-+++ b/src/moc.rs
-@@ -439,10 +439,35 @@ mod tests {
-         }
-     }
+ ---
+@@ -44,59 +44,9 @@ fprintd (D-Bus Daemon)
  
--    /// Verify that [`SensorSession::db2_delete_object`] treats `0x04b3` (`ObjectNotFound`) as idempotent success.
--    ///
--    /// # Arguments
--    /// *(none)*
-+    /// A missing frame does not prove finger removal; stop capture and report a general retry.
-+    #[test]
-+    fn capture_timeout_is_general_retry_and_stops_acquisition() {
-+        let interrupt = |header| {
-+            Ok(SensorInterruptEvent {
-+                header,
-+                state: 0,
-+                flags: 0,
-+            })
-+        };
-+        let mock = MockTransport::new(
-+            vec![],
-+            vec![
-+                interrupt([0, 0, 0, 0, 0]),
-+                interrupt([2, 0, 0x40, 0x10, 0]),
-+                Err(DriverError::Usb(rusb::Error::Timeout)),
-+            ],
-+        );
-+        let mut session = SensorSession::new(mock);
-+        let error = session
-+            .capture_finger_frame(CaptureMode::Enroll, &[128; 112], &[])
-+            .unwrap_err();
-+        assert!(matches!(error, DriverError::ScanRetry(_)));
-+        assert_eq!(error.fp_device_retry_code(), 0);
-+        assert!(error.to_string().contains("No completed image"));
-+        assert_eq!(session.transport.requests.last().unwrap(), &[0x04]);
-+    }
-+
-+    /// Deleting an already-removed DB2 object is idempotent.
-     #[test]
-     fn test_db2_delete_object_ignores_04b3() {
-         let mock = MockTransport::new(
-diff --git a/src/tod.rs b/src/tod.rs
-index 766aed1..d4c8d16 100644
---- a/src/tod.rs
-+++ b/src/tod.rs
-@@ -334,12 +334,20 @@ pub fn load_calibration_blob() -> Vec<u8> {
-         "/var/run/python-validity/calib-data.bin",
-         "calib_06cb_009a.bin",
-     ] {
--        if let Ok(bytes) = std::fs::read(candidate)
--            && bytes.len() >= 13440
--        {
--            return bytes;
-+        if let Ok(bytes) = std::fs::read(candidate) {
-+            if bytes.len() == 13440 {
-+                drv_info!("Using host calibration from {candidate}");
-+                return bytes;
-+            }
-+            drv_warn!(
-+                "Ignoring host calibration {candidate}: expected 13440 bytes, got {}",
-+                bytes.len()
-+            );
-         }
-     }
-+    drv_warn!(
-+        "Using bundled host calibration; it was not generated for this sensor. If scans trigger without a finger, run synaptics009a-calibrate with the sensor uncovered."
-+    );
-     EMBEDDED_CALIB_009A.to_vec()
- }
+ ---
  
-diff --git a/src/usb.rs b/src/usb.rs
-index a6e30de..9b3c6c5 100644
---- a/src/usb.rs
-+++ b/src/usb.rs
-@@ -184,6 +184,17 @@ impl SynapticsUsbTransport {
-         self.handle.reset()?;
-         Ok(())
-     }
-+
-+    /// Read the unencrypted calibration image stream from Bulk IN endpoint 0x82.
-+    /// The sensor must be running a bounded `CaptureMode::Calibrate` acquisition.
-+    pub fn read_calibration_frames(&mut self) -> Result<Vec<u8>> {
-+        let mut data = vec![0; 1024 * 1024];
-+        let len = self
-+            .handle
-+            .read_bulk(0x82, &mut data, Duration::from_secs(10))?;
-+        data.truncate(len);
-+        Ok(data)
-+    }
- }
+-## Prerequisites: Removing `python3-validity` / `open-fprintd`
++## Installation on Arch Linux / CachyOS
  
- impl Drop for SynapticsUsbTransport {
+-If you previously installed the `python3-validity` / `open-fprintd` PPA, disable it and restore the official `fprintd` and `libfprint-2-tod1` packages:
+-
+-```bash
+-sudo systemctl disable --now python3-validity.service open-fprintd.service fprintd-resume.service || true
+-sudo systemctl mask python3-validity.service
+-sudo apt update
+-sudo apt install -y fprintd libfprint-2-2 libfprint-2-tod1 libpam-fprintd
+-```
+-
+-> **Note on Sensor Firmware**: the `06cb:009a` sensor must have Partition 2 flashed with the Synaptics QMatcher firmware (`6_07f_lenovo_mis_qm.xpfwext`, v6.07.0164) and factory host pairing data in Partition 1 (already present if the sensor was initialized at least once under Windows or via `validity-sensors-firmware`).
+-
+----
+-
+-## Installation from `.deb` Package (Recommended)
+-
+-Download `libfprint-2-tod1-synaptics009a_0.1.0-1_amd64.deb` from the [**Releases**](https://github.com/corradoproietti/t480s-fingerprint-driver-for-linux/releases) page and install it with `dpkg`:
+-
+-```bash
+-sudo dpkg -i libfprint-2-tod1-synaptics009a_0.1.0-1_amd64.deb
+-```
+-
+-The `.deb` package automatically:
+-1. Installs `/usr/lib/x86_64-linux-gnu/libfprint-2/tod-1/libfprint-2-tod1-synaptics009a.so` (native `libfprint-2-tod1` plugin).
+-2. Installs `/lib/systemd/system/fprintd.service.d/synaptics009a-no-timeout.conf` (`fprintd -t` / `--no-timeout` override to keep the TLS session warm in RAM and avoid periodic USB resets).
+-3. Reloads `systemd` and restarts `fprintd.service`.
+-
+----
+-
+-## Building from Source
+-
+-### 1. Build Dependencies
+-
+-On Ubuntu / Debian / Linux Mint:
+-
+-```bash
+-sudo apt update
+-sudo apt install -y build-essential cargo rustc pkg-config libusb-1.0-0-dev libfprint-2-tod1
+-```
+-
+-### 2. Compile and Install
+-
+-On Ubuntu / Debian / Linux Mint:
+-
+-```bash
+-cargo build --release
+-sudo install -D -m 0644 target/release/libt480s_fingerprint_v2.so \
+-    /usr/lib/x86_64-linux-gnu/libfprint-2/tod-1/libfprint-2-tod1-synaptics009a.so
+-sudo systemctl restart fprintd
+-```
+-
+-### Arch Linux / CachyOS
++The `06cb:009a` sensor must have the Synaptics QMatcher firmware (`6_07f_lenovo_mis_qm.xpfwext`, v6.07.0164) in Partition 2 and factory pairing data in Partition 1. Pairing data is usually present if the sensor was initialized under Windows or with `validity-sensors-firmware`.
+ 
+ This driver requires **TOD (Touch OEM Driver)** support: an extension to libfprint
+ that loads separately installed driver plugins. Arch's standard `libfprint`
+@@ -104,18 +54,17 @@ package does not provide this loader. Install the AUR package
+ [`libfprint-tod`](https://aur.archlinux.org/packages/libfprint-tod), which replaces
+ `libfprint` and provides both `libfprint-2.so.2` and `libfprint-2-tod.so.1`.
+ 
+-Install the build tools and runtime dependencies:
++Install the build tools, USB/GLib dependencies, and `fprintd`, then build the
++TOD package from the AUR. The AUR package replaces standard `libfprint`:
+ 
+ ```bash
+ sudo pacman -S --needed base-devel rust pkgconf libusb glib2 fprintd
+-# If you use paru, install the TOD variant from the AUR:
+ paru -S libfprint-tod
+ ```
+ 
+ The `rust` package includes Cargo. If you already manage Rust through `rustup`,
+ omit `rust` from the pacman command and use your existing toolchain (with Rust
+-2024 edition support). You can also build `libfprint-tod` using the normal AUR
+-`makepkg` workflow instead of `paru`.
++2024 edition support). Substitute your preferred AUR helper for `paru` if needed.
+ 
+ Confirm that the TOD library is present before building:
+ 
+@@ -123,39 +72,11 @@ Confirm that the TOD library is present before building:
+ ls -l /usr/lib/libfprint-2.so.2 /usr/lib/libfprint-2-tod.so.1
+ ```
+ 
+-`build.rs` links by library filename using the linker's standard search paths;
+-no `/usr/lib/x86_64-linux-gnu` directory or compatibility symlink is needed on
+-Arch. Build from the repository directory and install into Arch's TOD plugin
+-directory:
+-
+-```bash
+-cargo build --release
+-sudo install -D -m 0644 target/release/libt480s_fingerprint_v2.so \
+-    /usr/lib/libfprint-2/tod-1/libfprint-2-tod1-synaptics009a.so
+-sudo systemctl restart fprintd
+-fprintd-enroll -f right-index-finger
+-fprintd-verify
+-```
+-
+-The sensor firmware and pairing prerequisites above still apply. The driver
+-manually defines the TOD C ABI layout in `src/tod.rs`; building successfully does
+-not by itself verify runtime compatibility with a particular `libfprint-tod`
+-version. If enrollment fails, inspect `journalctl -u fprintd -b`.
+-
+-The `.deb` installation and `pam-auth-update` instructions are for Debian-based
+-systems. For Arch/CachyOS PAM configuration, follow the
+-[ArchWiki fprint instructions](https://wiki.archlinux.org/title/Fprint).
+-
+-#### Build an Arch package (recommended on Arch/CachyOS)
+-
+-The repository includes an AUR-ready recipe in `packaging/arch`. Install
+-`libfprint-tod` from the AUR first, as described above; `makepkg` cannot resolve
+-AUR dependencies itself. Then build and install using pacman:
++Build and install the driver package from this repository's Arch recipe:
+ 
+ ```bash
+ cd packaging/arch
+ makepkg -si
+-sudo pacman -S --needed fprintd
+ sudo systemctl restart fprintd
+ fprintd-enroll -f right-index-finger
+ fprintd-verify
+@@ -278,15 +199,19 @@ fprintd-delete "$USER"
+ 
+ You can also manage fingerprints graphically via **GNOME Settings → Users → Fingerprint Login** or **Fingwit**.
+ 
+-### Enabling Fingerprint Authentication for `sudo`, Login, and Lock Screen
++### Enabling Fingerprint Authentication for `sudo` on Arch
+ 
+-Run:
++Add this line to the `auth` section of `/etc/pam.d/sudo`, before its existing
++password rule:
+ 
+-```bash
+-sudo pam-auth-update
++```pam
++auth       sufficient   pam_fprintd.so
+ ```
+ 
+-Make sure **`[*] Fingerprint authentication`** is checked (using the spacebar) and press **Enter**.
++Keep the existing password fallback. Test in a second terminal with `sudo -k`
++followed by `sudo -v`; keep an open root shell until you confirm it works. For
++GDM, the lock screen, or other PAM services, see the
++[ArchWiki fprint instructions](https://wiki.archlinux.org/title/Fprint).
+ 
+ ---
+ 
 diff --git a/src/calibration.rs b/src/calibration.rs
 new file mode 100644
 index 0000000..0b5fdea
