@@ -1,0 +1,27 @@
+pkgbase = libfprint-2-tod1-synaptics009a
+	pkgdesc = Native TOD fingerprint driver for Synaptics Metallica MIS (06cb:009a)
+	pkgver = 0.1.0
+	pkgrel = 2
+	url = https://github.com/corradoproietti/t480s-fingerprint-driver-for-linux
+	arch = x86_64
+	license = LGPL-2.1-or-later
+	license = MIT
+	makedepends = cargo
+	makedepends = pkgconf
+	depends = libgcc
+	depends = glibc
+	depends = glib2
+	depends = libfprint-tod
+	depends = libusb
+	optdepends = fprintd: fingerprint enrollment, verification and PAM integration
+	options = !lto
+	source = t480s-fingerprint-driver-for-linux-a5392c77f73760eb636d75fd21f5b3decb41138d.tar.gz::https://github.com/corradoproietti/t480s-fingerprint-driver-for-linux/archive/a5392c77f73760eb636d75fd21f5b3decb41138d.tar.gz
+	source = arch-library-paths.patch
+	source = host-calibration.patch
+	source = Cargo.lock
+	sha256sums = 3358d7376a277033a6b1baf9472f7e1d49614461669a96dfd6c0e26a0503b676
+	sha256sums = 2edcdd4407b486fad1b6acf50a3248794fae9f39f0bc85d169b95e451452c9d8
+	sha256sums = 24d551ca258d04b6cd2be12374589794d7a3f0233c5cc45fff6ec7ce5651041e
+	sha256sums = c06691b19cf12542ab0ac77dc95c4db4ba5fa8a905c55ee97c8ef41f2a6ab972
+
+pkgname = libfprint-2-tod1-synaptics009a

@@ -653,7 +653,7 @@ impl<T: Transport> SensorSession<T> {
                         .wait_interrupt_event(Duration::from_secs(5))
                         .map_err(|e| match e {
                             DriverError::Usb(rusb::Error::Timeout) => DriverError::ScanRetry(
-                                "Finger lifted too quickly before frame capture completed"
+                                "No completed image within 5 seconds after the sensor's touch event; check calibration if this happens without touching the sensor"
                                     .to_string(),
                             ),
                             other => other,

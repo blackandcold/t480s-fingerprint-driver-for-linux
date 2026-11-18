@@ -334,12 +334,20 @@ pub fn load_calibration_blob() -> Vec<u8> {
         "/var/run/python-validity/calib-data.bin",
         "calib_06cb_009a.bin",
     ] {
-        if let Ok(bytes) = std::fs::read(candidate)
-            && bytes.len() >= 13440
-        {
-            return bytes;
+        if let Ok(bytes) = std::fs::read(candidate) {
+            if bytes.len() == 13440 {
+                drv_info!("Using host calibration from {candidate}");
+                return bytes;
+            }
+            drv_warn!(
+                "Ignoring host calibration {candidate}: expected 13440 bytes, got {}",
+                bytes.len()
+            );
         }
     }
+    drv_warn!(
+        "Using bundled host calibration; it was not generated for this sensor. If scans trigger without a finger, run synaptics009a-calibrate with the sensor uncovered."
+    );
     EMBEDDED_CALIB_009A.to_vec()
 }
 

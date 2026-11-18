@@ -20,6 +20,7 @@
 //!               └── log.rs       : Real-time stderr / systemd-journald structured logger
 //! ```
 
+pub mod calibration;
 pub mod capture;
 pub mod db2;
 pub mod error;

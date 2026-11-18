@@ -439,10 +439,35 @@ mod tests {
         }
     }
 
-    /// Verify that [`SensorSession::db2_delete_object`] treats `0x04b3` (`ObjectNotFound`) as idempotent success.
-    ///
-    /// # Arguments
-    /// *(none)*
+    /// A missing frame does not prove finger removal; stop capture and report a general retry.
+    #[test]
+    fn capture_timeout_is_general_retry_and_stops_acquisition() {
+        let interrupt = |header| {
+            Ok(SensorInterruptEvent {
+                header,
+                state: 0,
+                flags: 0,
+            })
+        };
+        let mock = MockTransport::new(
+            vec![],
+            vec![
+                interrupt([0, 0, 0, 0, 0]),
+                interrupt([2, 0, 0x40, 0x10, 0]),
+                Err(DriverError::Usb(rusb::Error::Timeout)),
+            ],
+        );
+        let mut session = SensorSession::new(mock);
+        let error = session
+            .capture_finger_frame(CaptureMode::Enroll, &[128; 112], &[])
+            .unwrap_err();
+        assert!(matches!(error, DriverError::ScanRetry(_)));
+        assert_eq!(error.fp_device_retry_code(), 0);
+        assert!(error.to_string().contains("No completed image"));
+        assert_eq!(session.transport.requests.last().unwrap(), &[0x04]);
+    }
+
+    /// Deleting an already-removed DB2 object is idempotent.
     #[test]
     fn test_db2_delete_object_ignores_04b3() {
         let mock = MockTransport::new(

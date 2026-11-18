@@ -184,6 +184,17 @@ impl SynapticsUsbTransport {
         self.handle.reset()?;
         Ok(())
     }
+
+    /// Read the unencrypted calibration image stream from Bulk IN endpoint 0x82.
+    /// The sensor must be running a bounded `CaptureMode::Calibrate` acquisition.
+    pub fn read_calibration_frames(&mut self) -> Result<Vec<u8>> {
+        let mut data = vec![0; 1024 * 1024];
+        let len = self
+            .handle
+            .read_bulk(0x82, &mut data, Duration::from_secs(10))?;
+        data.truncate(len);
+        Ok(data)
+    }
 }
 
 impl Drop for SynapticsUsbTransport {

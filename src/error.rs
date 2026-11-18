@@ -220,7 +220,9 @@ impl DriverError {
                 0x0010..=0x00ff => 2, // FP_DEVICE_RETRY_CENTER_FINGER
                 _ => 3,               // FP_DEVICE_RETRY_REMOVE_FINGER
             },
-            Self::ScanRetry(_) => 3, // FP_DEVICE_RETRY_REMOVE_FINGER
+            // An incomplete frame or unexpected interrupt does not establish
+            // that a finger is still present or was removed too early.
+            Self::ScanRetry(_) => 0, // FP_DEVICE_RETRY_GENERAL
             _ => 0,                  // FP_DEVICE_RETRY_GENERAL
         }
     }

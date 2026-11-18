@@ -1,0 +1,60 @@
+# Maintainer: Johannes Kurz <j.kurz@gmx.at>
+pkgname=libfprint-2-tod1-synaptics009a
+pkgver=0.1.0
+pkgrel=2
+pkgdesc='Native TOD fingerprint driver for Synaptics Metallica MIS (06cb:009a)'
+arch=('x86_64')
+url='https://github.com/corradoproietti/t480s-fingerprint-driver-for-linux'
+# Use the LGPL option of upstream's MIT OR LGPL-2.1-or-later license.
+license=('LGPL-2.1-or-later' 'MIT')
+depends=('libgcc' 'glibc' 'glib2' 'libfprint-tod' 'libusb')
+makedepends=('cargo' 'pkgconf')
+optdepends=('fprintd: fingerprint enrollment, verification and PAM integration')
+options=('!lto')
+_commit=a5392c77f73760eb636d75fd21f5b3decb41138d
+_source="t480s-fingerprint-driver-for-linux-${_commit}"
+_target="${CARCH}-unknown-linux-gnu"
+source=(
+    "${_source}.tar.gz::${url}/archive/${_commit}.tar.gz"
+    'arch-library-paths.patch'
+    'host-calibration.patch'
+    'Cargo.lock'
+)
+sha256sums=(
+    '3358d7376a277033a6b1baf9472f7e1d49614461669a96dfd6c0e26a0503b676'
+    '2edcdd4407b486fad1b6acf50a3248794fae9f39f0bc85d169b95e451452c9d8'
+    '24d551ca258d04b6cd2be12374589794d7a3f0233c5cc45fff6ec7ce5651041e'
+    'c06691b19cf12542ab0ac77dc95c4db4ba5fa8a905c55ee97c8ef41f2a6ab972'
+)
+
+prepare() {
+    cd "${srcdir}/${_source}"
+    patch -Np1 -i "${srcdir}/arch-library-paths.patch"
+    patch -Np1 -i "${srcdir}/host-calibration.patch"
+    cp "${srcdir}/Cargo.lock" Cargo.lock
+    cargo fetch --locked --target "${_target}"
+}
+
+build() {
+    cd "${srcdir}/${_source}"
+    export CARGO_TARGET_DIR="${srcdir}/target"
+    cargo build --frozen --release --target "${_target}"
+}
+
+check() {
+    cd "${srcdir}/${_source}"
+    export CARGO_TARGET_DIR="${srcdir}/target"
+    cargo test --frozen --release --target "${_target}"
+}
+
+package() {
+    install -Dm644 \
+        "${srcdir}/target/${_target}/release/libt480s_fingerprint_v2.so" \
+        "${pkgdir}/usr/lib/libfprint-2/tod-1/libfprint-2-tod1-synaptics009a.so"
+    install -Dm644 "${srcdir}/${_source}/README.md" \
+        "${pkgdir}/usr/share/doc/${pkgname}/README.md"
+    install -Dm755 "${srcdir}/target/${_target}/release/synaptics009a-calibrate" \
+        "${pkgdir}/usr/bin/synaptics009a-calibrate"
+    install -Dm644 "${srcdir}/${_source}/LICENSE.python-validity" \
+        "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE.python-validity"
+}
