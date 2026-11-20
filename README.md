@@ -59,12 +59,12 @@ TOD package from the AUR. The AUR package replaces standard `libfprint`:
 
 ```bash
 sudo pacman -S --needed base-devel rust pkgconf libusb glib2 fprintd
-paru -S libfprint-tod
+yay -S libfprint-tod
 ```
 
 The `rust` package includes Cargo. If you already manage Rust through `rustup`,
 omit `rust` from the pacman command and use your existing toolchain (with Rust
-2024 edition support). Substitute your preferred AUR helper for `paru` if needed.
+2024 edition support). Substitute your preferred AUR helper for `yay` if needed.
 
 Confirm that the TOD library is present before building:
 
@@ -103,6 +103,42 @@ package repository. After changing package metadata or source checksums,
 regenerate `.SRCINFO` with `makepkg --printsrcinfo > .SRCINFO` from
 `packaging/arch`. These files are provided here; the package has not been
 submitted to the AUR.
+
+---
+
+## Optional WWAN Resume Workaround (ModemManager)
+
+Some ThinkPad WWAN modems, including the Fibocom L830-EB-00, may remain
+visible on USB after suspend but fail to reappear in NetworkManager. If the
+system uses **ModemManager**, restarting it after resume forces the modem's
+ports to be rediscovered. This is independent of the fingerprint driver and
+is not needed when using another WWAN management stack.
+
+Create a local systemd sleep hook:
+
+```bash
+sudoedit /etc/systemd/system-sleep/90-modemmanager
+```
+
+Add:
+
+```sh
+#!/bin/sh
+
+if [ "$1" = post ]; then
+    /usr/bin/systemctl restart ModemManager.service
+fi
+```
+
+Make it executable:
+
+```bash
+sudo chmod 755 /etc/systemd/system-sleep/90-modemmanager
+```
+
+This workaround only applies to systems that have and use
+`ModemManager.service`; do not install it if the modem is managed directly by
+another network stack.
 
 ---
 
